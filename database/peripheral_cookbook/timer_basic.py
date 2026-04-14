@@ -70,6 +70,7 @@ static void MX_{inst}_Init(void)
                 )
 
         return PeripheralCode(
+            peripheral_type="timer",
             init_function=init_fn,
             init_prototype=f"static void MX_{inst}_Init(void);",
             msp_init=msp,

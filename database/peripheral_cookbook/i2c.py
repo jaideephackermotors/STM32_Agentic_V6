@@ -72,6 +72,7 @@ static void MX_{inst}_Init(void)
         msp_lines.append("  }")
 
         return PeripheralCode(
+            peripheral_type="i2c",
             init_function=init_fn,
             init_prototype=f"static void MX_{inst}_Init(void);",
             msp_init="\n".join(msp_lines),

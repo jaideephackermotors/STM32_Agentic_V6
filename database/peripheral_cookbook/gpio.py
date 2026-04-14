@@ -22,6 +22,7 @@ class GPIOCookbook(CookbookRecipe):
         """Generate GPIO init code for a list of standalone GPIOs."""
         code = self.engine.generate_standalone_init(config)
         return PeripheralCode(
+            peripheral_type="gpio",
             init_function=code,
             init_prototype="static void MX_GPIO_Init(void);",
             hal_modules=["HAL_GPIO_MODULE_ENABLED"],

@@ -11,6 +11,7 @@ import json
 import logging
 
 from agents.agent_base import DeepSeekClient
+from agents.failure_log import FailureLog
 from schemas.requirements import RequirementSpec
 from schemas.blueprint import ProjectBlueprint
 from schemas.peripheral_config import (
@@ -72,6 +73,7 @@ class ArchitectAgent:
         self.client = client
         self.mcu = mcu
         self.clock_engine = ClockEngine(mcu)
+        self.failure_log = FailureLog("architect")
 
     def design(self, spec: RequirementSpec) -> ProjectBlueprint:
         """Design the complete project blueprint."""
@@ -80,6 +82,9 @@ class ArchitectAgent:
 
         # Build pin-AF summary for the LLM
         af_summary = self._build_af_summary()
+
+        # Inject past failure lessons into the prompt
+        failures_section = self.failure_log.get_prompt_section()
 
         system = SYSTEM_PROMPT.format(
             mcu_name=self.mcu.name,
@@ -90,22 +95,154 @@ class ArchitectAgent:
             apb1_timer_mhz=clock.apb1_timer_mhz,
             apb2_timer_mhz=clock.apb2_timer_mhz,
         )
+        if failures_section:
+            system += "\n" + failures_section
 
         user_msg = f"RequirementSpec:\n{spec.model_dump_json(indent=2)}"
 
-        data = self.client.reason_json(system, user_msg)
+        def _inject_and_normalize(data: dict) -> None:
+            """Inject clock config and normalize LLM outputs."""
+            data["clock"] = clock.model_dump()
+            data["mcu"] = self.mcu.name
+            if "project_name" not in data:
+                data["project_name"] = spec.project_name
+            self._normalize_blueprint_data(data)
 
-        # Inject the deterministically-solved clock config
-        data["clock"] = clock.model_dump()
-        data["mcu"] = self.mcu.name
-        if "project_name" not in data:
-            data["project_name"] = spec.project_name
+        data = self.client.reason_json_validated(
+            system, user_msg,
+            model_class=ProjectBlueprint,
+            normalize_fn=_inject_and_normalize,
+        )
+
+        # Final construction (already validated inside reason_json_validated)
+        _inject_and_normalize(data)
+
+        try:
+            blueprint = ProjectBlueprint(**data)
+        except Exception as e:
+            # Record the failure for future prompt enrichment
+            self.failure_log.record_validation_error(str(e), data)
+            raise
 
         blueprint = ProjectBlueprint(**data)
         log.info("Blueprint designed: %d gpios, %d uarts, %d timers, %d adcs",
                  len(blueprint.gpios), len(blueprint.uarts),
                  len(blueprint.timers), len(blueprint.adcs))
         return blueprint
+
+    @staticmethod
+    def _normalize_blueprint_data(data: dict) -> None:
+        """Normalize common LLM abbreviations before pydantic validation."""
+        # Normalize GPIO modes
+        for gpio in data.get("gpios", []):
+            GPIOConfig.normalize_mode(gpio)
+
+        # Normalize timer modes
+        TIMER_MODE_ALIASES = {
+            "pwm_generation": "pwm", "PWM": "pwm", "Basic": "basic",
+            "input-capture": "input_capture", "output-compare": "output_compare",
+        }
+        for tim in data.get("timers", []):
+            if isinstance(tim, dict) and "mode" in tim:
+                tim["mode"] = TIMER_MODE_ALIASES.get(tim["mode"], tim["mode"])
+            for ch in tim.get("channels", []) if isinstance(tim, dict) else []:
+                if isinstance(ch, dict) and "mode" in ch:
+                    ch["mode"] = TIMER_MODE_ALIASES.get(ch["mode"], ch["mode"])
+
+        # Normalize UART fields
+        UART_MODE_ALIASES = {
+            "tx": "tx_only", "rx": "rx_only", "txrx": "tx_rx",
+            "TX_RX": "tx_rx", "tx/rx": "tx_rx",
+        }
+        UART_PIN_ALIASES = {
+            "tx": "tx_pin", "TX": "tx_pin", "TX_Pin": "tx_pin",
+            "rx": "rx_pin", "RX": "rx_pin", "RX_Pin": "rx_pin",
+        }
+        for uart in data.get("uarts", []):
+            if isinstance(uart, dict):
+                for alias, canonical in UART_PIN_ALIASES.items():
+                    if alias in uart and canonical not in uart:
+                        uart[canonical] = uart.pop(alias)
+                if "mode" in uart:
+                    uart["mode"] = UART_MODE_ALIASES.get(uart["mode"], uart["mode"])
+
+        # Normalize I2C pin fields
+        I2C_PIN_ALIASES = {
+            "scl": "scl_pin", "SCL": "scl_pin", "SCL_Pin": "scl_pin",
+            "sda": "sda_pin", "SDA": "sda_pin", "SDA_Pin": "sda_pin",
+        }
+        for i2c in data.get("i2cs", []):
+            if isinstance(i2c, dict):
+                for alias, canonical in I2C_PIN_ALIASES.items():
+                    if alias in i2c and canonical not in i2c:
+                        i2c[canonical] = i2c.pop(alias)
+
+        # Normalize SPI fields
+        SPI_PIN_ALIASES = {
+            "mosi": "mosi_pin", "MOSI": "mosi_pin", "MOSI_Pin": "mosi_pin",
+            "miso": "miso_pin", "MISO": "miso_pin", "MISO_Pin": "miso_pin",
+            "sck": "sck_pin", "SCK": "sck_pin", "SCK_Pin": "sck_pin", "clk_pin": "sck_pin",
+            "nss": "nss_pin", "NSS": "nss_pin", "NSS_Pin": "nss_pin", "cs_pin": "nss_pin",
+            "cs": "nss_pin", "CS": "nss_pin",
+        }
+        for spi in data.get("spis", []):
+            if isinstance(spi, dict):
+                # Remap aliased pin field names
+                for alias, canonical in SPI_PIN_ALIASES.items():
+                    if alias in spi and canonical not in spi:
+                        spi[canonical] = spi.pop(alias)
+                if "mode" in spi:
+                    spi["mode"] = spi["mode"].lower()
+                # Normalize nss_pin: "None"/"none"/""  → None
+                if "nss_pin" in spi and spi["nss_pin"] in ("None", "none", "null", ""):
+                    spi["nss_pin"] = None
+                # Normalize cpol: "low"/"high" → 0/1
+                CPOL_ALIASES = {"low": 0, "LOW": 0, "high": 1, "HIGH": 1, "0": 0, "1": 1}
+                if "cpol" in spi and not isinstance(spi["cpol"], int):
+                    spi["cpol"] = CPOL_ALIASES.get(str(spi["cpol"]), 0)
+                # Normalize cpha: "1edge"/"2edge" → 0/1
+                CPHA_ALIASES = {"1edge": 0, "2edge": 1, "1Edge": 0, "2Edge": 1,
+                                "first": 0, "second": 1, "0": 0, "1": 1}
+                if "cpha" in spi and not isinstance(spi["cpha"], int):
+                    spi["cpha"] = CPHA_ALIASES.get(str(spi["cpha"]), 0)
+                # Normalize first_bit: case insensitive
+                if "first_bit" in spi:
+                    spi["first_bit"] = str(spi["first_bit"]).lower()
+
+        # Normalize ADC resolution (LLM may return "12bit" instead of 12)
+        import re as _re
+        for adc in data.get("adcs", []):
+            if isinstance(adc, dict) and "resolution" in adc:
+                res = adc["resolution"]
+                if isinstance(res, str):
+                    digits = _re.findall(r'\d+', str(res))
+                    if digits:
+                        adc["resolution"] = int(digits[0])
+
+            # Normalize ADC channel configs
+            for ch in adc.get("channels", []) if isinstance(adc, dict) else []:
+                if isinstance(ch, dict):
+                    if "sampling_time" in ch and isinstance(ch["sampling_time"], str):
+                        digits = _re.findall(r'\d+', ch["sampling_time"])
+                        if digits:
+                            ch["sampling_time"] = int(digits[0])
+
+        # Normalize DMA direction
+        DMA_DIR_ALIASES = {
+            "memory_to_peripheral": "memory_to_periph",
+            "peripheral_to_memory": "periph_to_memory",
+            "mem_to_periph": "memory_to_periph",
+            "periph_to_mem": "periph_to_memory",
+        }
+        for dma in data.get("dmas", []):
+            if isinstance(dma, dict) and "direction" in dma:
+                dma["direction"] = DMA_DIR_ALIASES.get(dma["direction"], dma["direction"])
+
+        # Normalize GPIO speed
+        SPEED_ALIASES = {"very high": "very_high", "veryHigh": "very_high", "VeryHigh": "very_high"}
+        for gpio in data.get("gpios", []):
+            if isinstance(gpio, dict) and "speed" in gpio:
+                gpio["speed"] = SPEED_ALIASES.get(gpio["speed"], gpio["speed"])
 
     def _build_af_summary(self) -> str:
         """Build a compact pin-AF table for the system prompt."""

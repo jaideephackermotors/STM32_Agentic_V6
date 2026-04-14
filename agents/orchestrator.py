@@ -110,6 +110,14 @@ class Orchestrator:
                 hal_cache_dir=self.config.get("hal", {}).get("cache_dir", "~/.stm32_hal_cache")
             )
             project_dir = builder.build(blueprint, self.output_dir)
+
+            # Save blueprint for emulation test stage
+            import json as _json
+            bp_path = project_dir / "blueprint.json"
+            bp_path.write_text(
+                _json.dumps(blueprint.model_dump(), indent=2, default=str),
+                encoding="utf-8",
+            )
             stages_completed.append("scaffold_project")
 
             # --- Stage 5: Generate init code (deterministic) ---
@@ -122,6 +130,9 @@ class Orchestrator:
             vocabulary = self._extract_vocabulary(blueprint)
             code_blocks = self.code_gen.generate(spec, blueprint, vocabulary)
             stages_completed.append("generate_app_logic")
+
+            # --- Stage 6.5: Sanitize code blocks ---
+            code_blocks = self._sanitize_code_blocks(code_blocks, blueprint)
 
             # --- Stage 7: Validate identifiers ---
             log.info("=== Stage 7: Validating identifiers ===")
@@ -144,6 +155,11 @@ class Orchestrator:
             stages_completed.append("build")
 
             if result.success:
+                # --- Stage 10: Emulation test ---
+                log.info("=== Stage 10: Emulation test ===")
+                emu_result = self._run_emulation_test(project_dir, blueprint)
+                stages_completed.append("emulation_test")
+
                 return PipelineResult(
                     success=True,
                     project_dir=str(project_dir),
@@ -151,6 +167,7 @@ class Orchestrator:
                     flash_size=result.flash_size,
                     ram_size=result.ram_size,
                     stages_completed=stages_completed,
+                    emulation_result=emu_result,
                 )
             else:
                 return PipelineResult(
@@ -211,7 +228,9 @@ class Orchestrator:
         clock_code = clock_engine.generate_code(blueprint.clock)
 
         # Build init call list for main()
-        init_calls = ["MX_GPIO_Init();"]
+        init_calls = []
+        if blueprint.gpios:
+            init_calls.append("MX_GPIO_Init();")
         for uart in blueprint.uarts:
             init_calls.append(f"MX_{uart.instance}_UART_Init();")
         for spi in blueprint.spis:
@@ -254,13 +273,14 @@ class Orchestrator:
 
         # Generate hal_msp.c
         # Group MSP blocks by peripheral type
-        uart_msps = [m for m, c in zip(msp_blocks, codes) if "uart" in str(c.hal_sources).lower()]
-        spi_msps = [m for m, c in zip(msp_blocks, codes) if "spi" in str(c.hal_sources).lower()]
-        i2c_msps = [m for m, c in zip(msp_blocks, codes) if "i2c" in str(c.hal_sources).lower()]
-        tim_msps = [m for m, c in zip(msp_blocks, codes) if "tim" in str(c.hal_sources).lower()]
-        adc_msps = [m for m, c in zip(msp_blocks, codes) if "adc" in str(c.hal_sources).lower()]
+        uart_msps = [c.msp_init for c in codes if c.peripheral_type == "uart" and c.msp_init]
+        spi_msps = [c.msp_init for c in codes if c.peripheral_type == "spi" and c.msp_init]
+        i2c_msps = [c.msp_init for c in codes if c.peripheral_type == "i2c" and c.msp_init]
+        tim_msps = [c.msp_init for c in codes if c.peripheral_type == "timer" and c.msp_init]
+        adc_msps = [c.msp_init for c in codes if c.peripheral_type == "adc" and c.msp_init]
 
-        msp_c = generate_hal_msp_c(uart_msps, spi_msps, i2c_msps, tim_msps, adc_msps)
+        msp_c = generate_hal_msp_c(uart_msps, spi_msps, i2c_msps, tim_msps, adc_msps,
+                                   handle_declarations=handles)
         (project_dir / "Core" / "Src" / "stm32f4xx_hal_msp.c").write_text(msp_c, encoding="utf-8")
 
         # Generate hal_conf.h
@@ -352,6 +372,12 @@ class Orchestrator:
             "Error_Handler",
         ])
 
+        # Standard C library functions commonly needed
+        hal_functions.update([
+            "sprintf", "snprintf", "strlen", "memset", "memcpy",
+            "strcmp", "strncmp", "printf",
+        ])
+
         # Pin defines
         for gpio in blueprint.gpios:
             if gpio.label:
@@ -400,7 +426,9 @@ class Orchestrator:
                     rf"(.*?)"
                     rf"(\n\s*/\* USER CODE END {re.escape(region)} \*/)"
                 )
-                replacement = rf"\g<1>{code}\g<3>"
+                # Escape backslashes in code to prevent regex backreference issues
+                safe_code = code.replace("\\", "\\\\")
+                replacement = rf"\g<1>{safe_code}\g<3>"
                 new_content = re.sub(pattern, replacement, content, flags=re.DOTALL)
 
                 if new_content != content:
@@ -410,6 +438,81 @@ class Orchestrator:
                     log.warning("Region %s not found in %s", region, filename)
 
             fpath.write_text(content, encoding="utf-8")
+
+    def _sanitize_code_blocks(self, code_blocks: list[dict], blueprint) -> list[dict]:
+        """Remove duplicate/conflicting function definitions from LLM output."""
+        # Functions that are already defined in the template or init code
+        forbidden_fns = {
+            "Error_Handler", "assert_failed", "SystemClock_Config",
+            "HAL_Init", "main", "MX_GPIO_Init",
+        }
+        for uart in blueprint.uarts:
+            forbidden_fns.add(f"MX_{uart.instance}_UART_Init")
+        for spi in blueprint.spis:
+            forbidden_fns.add(f"MX_{spi.instance}_Init")
+        for i2c in blueprint.i2cs:
+            forbidden_fns.add(f"MX_{i2c.instance}_Init")
+        for tim in blueprint.timers:
+            forbidden_fns.add(f"MX_{tim.instance}_Init")
+        for adc in blueprint.adcs:
+            forbidden_fns.add(f"MX_{adc.instance}_Init")
+
+        sanitized = []
+        for block in code_blocks:
+            code = block.get("code", "")
+            region = block.get("region", "")
+
+            # Strip any #include lines — already handled
+            code = re.sub(r'^\s*#include\s+[<"].*?[>"]\s*$', '', code, flags=re.MULTILINE)
+
+            # Remove re-definitions of forbidden functions
+            for fn_name in forbidden_fns:
+                # Match: void fn_name(...) { ... } — multi-line function body
+                pattern = rf'(?:static\s+)?void\s+{re.escape(fn_name)}\s*\([^)]*\)\s*\{{[^}}]*\}}'
+                code = re.sub(pattern, '', code, flags=re.DOTALL)
+                # Also remove forward declarations
+                pattern = rf'(?:static\s+)?void\s+{re.escape(fn_name)}\s*\([^)]*\)\s*;'
+                code = re.sub(pattern, '', code, flags=re.MULTILINE)
+
+            # Strip handle re-declarations (they're already global)
+            code = re.sub(r'^\s*(?:extern\s+)?(?:UART|TIM|SPI|I2C|ADC)_HandleTypeDef\s+\w+\s*;',
+                          '', code, flags=re.MULTILINE)
+
+            # Clean up excessive blank lines
+            code = re.sub(r'\n{3,}', '\n\n', code).strip()
+
+            if code:
+                block["code"] = code
+                sanitized.append(block)
+            else:
+                log.info("Sanitized out empty block for region %s", region)
+
+        return sanitized
+
+    def _run_emulation_test(self, project_dir: Path, blueprint) -> dict:
+        """Run Stage 10: Renode emulation test."""
+        try:
+            from emulator.test_runner import test_from_blueprint, find_elf
+            elf = find_elf(str(project_dir))
+            if not elf:
+                log.warning("No .elf found for emulation test")
+                return {"status": "SKIP", "detail": "No .elf found"}
+
+            result = test_from_blueprint(elf, blueprint.model_dump())
+            log.info("Emulation: %s (%dms)", result.status, result.duration_ms)
+            for c in result.checks:
+                icon = "+" if c["passed"] else "-"
+                log.info("  [%s] %s: %s", icon, c["check"], c["detail"][:80])
+
+            return {
+                "status": result.status,
+                "duration_ms": result.duration_ms,
+                "uart_output": result.uart_output[:500] if result.uart_output else "",
+                "checks": result.checks,
+            }
+        except Exception as e:
+            log.warning("Emulation test failed: %s", e)
+            return {"status": "ERROR", "detail": str(e)}
 
     def _generate_it_h(self) -> str:
         """Generate minimal stm32f4xx_it.h."""

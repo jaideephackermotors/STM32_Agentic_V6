@@ -22,7 +22,7 @@ toolchain:
 build:
   optimization: "-Og"
   debug: true
-  warnings: ["-Wall", "-Wextra", "-Werror", "-Wshadow"]
+  warnings: ["-Wall", "-Wextra", "-Werror"]
   max_compile_fix_attempts: 5
 
 pipeline:

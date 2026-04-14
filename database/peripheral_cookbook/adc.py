@@ -1,14 +1,19 @@
-"""ADC cookbook recipe."""
+"""ADC cookbook recipe with DMA support."""
 
 from __future__ import annotations
 from database.peripheral_cookbook.base import CookbookRecipe, PeripheralCode
 from schemas.peripheral_config import ADCConfig
 from schemas.mcu_profile import MCUProfile
+from core.dma_engine import DMAEngine
 from database.mcu.stm32f446re import ADC_CHANNEL_PINS
 
 
 class ADCCookbook(CookbookRecipe):
-    """Generates ADC peripheral init code."""
+    """Generates ADC peripheral init code with optional DMA."""
+
+    def __init__(self, mcu: MCUProfile, dma_engine: DMAEngine = None):
+        super().__init__(mcu)
+        self.dma_engine = dma_engine or DMAEngine(mcu)
 
     def generate(self, config: ADCConfig) -> PeripheralCode:
         inst = config.instance
@@ -67,13 +72,12 @@ static void MX_{inst}_Init(void)
 {ch_code}
 }}"""
 
-        # MSP — clock enable + GPIO analog pins
+        # MSP — clock enable + GPIO analog pins + DMA
         msp_lines = [
             f"  if (adcHandle->Instance == {inst})",
             "  {",
             f"    {periph.rcc_macro}();",
         ]
-        # GPIO ports for ADC pins
         ports = set()
         for ch in config.channels:
             if ch.pin and ch.pin != "internal":
@@ -93,6 +97,27 @@ static void MX_{inst}_Init(void)
                     msp_lines.append("    GPIO_InitStruct.Pull = GPIO_NOPULL;")
                     msp_lines.append(f"    HAL_GPIO_Init({self._pin_port_macro(ch.pin)}, &GPIO_InitStruct);")
 
+        # DMA
+        extra_handles = []
+        extra_irq_handlers = {}
+        extra_hal_sources = []
+        extra_hal_modules = []
+
+        if config.dma:
+            mapping = self.dma_engine.lookup(inst)  # e.g. "ADC1"
+            if mapping:
+                dma_handle = f"hdma_{inst.lower()}"
+                dma_info = self.dma_engine.generate_msp_dma_init(
+                    mapping, handle, dma_handle, "periph_to_memory",
+                    "halfword"  # ADC data is 16-bit
+                )
+                msp_lines.append("")
+                msp_lines.append(dma_info["msp_code"])
+                extra_handles.append(dma_info["handle_decl"])
+                extra_irq_handlers[dma_info["irq_handler_name"]] = dma_info["irq_handler_code"]
+                extra_hal_sources.extend(dma_info["hal_sources"])
+                extra_hal_modules.extend(dma_info["hal_modules"])
+
         if config.interrupt:
             for irq in periph.irq_names:
                 msp_lines.append(f"    HAL_NVIC_SetPriority({irq}, 5, 0);")
@@ -100,11 +125,17 @@ static void MX_{inst}_Init(void)
 
         msp_lines.append("  }")
 
+        hal_sources = list(set(["stm32f4xx_hal_adc.c", "stm32f4xx_hal_adc_ex.c"] + extra_hal_sources))
+        hal_modules = list(set(["HAL_ADC_MODULE_ENABLED"] + extra_hal_modules))
+        handles = [f"ADC_HandleTypeDef {handle};"] + extra_handles
+
         return PeripheralCode(
+            peripheral_type="adc",
             init_function=init_fn,
             init_prototype=f"static void MX_{inst}_Init(void);",
             msp_init="\n".join(msp_lines),
-            hal_sources=["stm32f4xx_hal_adc.c", "stm32f4xx_hal_adc_ex.c"],
-            hal_modules=["HAL_ADC_MODULE_ENABLED"],
-            handle_declarations=[f"ADC_HandleTypeDef {handle};"],
+            irq_handlers=extra_irq_handlers,
+            hal_sources=hal_sources,
+            hal_modules=hal_modules,
+            handle_declarations=handles,
         )

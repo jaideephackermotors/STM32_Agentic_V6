@@ -32,6 +32,28 @@ class GPIOConfig(BaseModel):
     speed: Literal["low", "medium", "high", "very_high"] = "low"
     initial_state: Literal["high", "low"] = "low"
 
+    @classmethod
+    def normalize_mode(cls, data: dict) -> dict:
+        """Normalize common LLM abbreviations for GPIO mode before validation."""
+        MODE_ALIASES = {
+            "input_pu": "input_pullup",
+            "input_pd": "input_pulldown",
+            "in_pu": "input_pullup",
+            "in_pd": "input_pulldown",
+            "pp": "output_pp",
+            "od": "output_od",
+            "push_pull": "output_pp",
+            "open_drain": "output_od",
+            "output": "output_pp",
+            "output_pushpull": "output_pp",
+            "output_opendrain": "output_od",
+            "input_pull_up": "input_pullup",
+            "input_pull_down": "input_pulldown",
+        }
+        if isinstance(data, dict) and "mode" in data:
+            data["mode"] = MODE_ALIASES.get(data["mode"], data["mode"])
+        return data
+
 
 class UARTConfig(BaseModel):
     """UART/USART peripheral configuration."""
@@ -41,8 +63,8 @@ class UARTConfig(BaseModel):
     stop_bits: Literal[1, 2] = 1
     parity: Literal["none", "even", "odd"] = "none"
     mode: Literal["tx_rx", "tx_only", "rx_only"] = "tx_rx"
-    tx_pin: str           # e.g. "PA2"
-    rx_pin: str           # e.g. "PA3"
+    tx_pin: Optional[str] = None    # e.g. "PA2", None for rx_only
+    rx_pin: Optional[str] = None    # e.g. "PA3", None for tx_only
     interrupt: bool = False
     dma_tx: bool = False
     dma_rx: bool = False

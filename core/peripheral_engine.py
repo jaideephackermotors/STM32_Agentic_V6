@@ -12,6 +12,7 @@ from database.peripheral_cookbook.timer_basic import TimerBasicCookbook
 from database.peripheral_cookbook.timer_pwm import TimerPWMCookbook
 from database.peripheral_cookbook.timer_input_capture import TimerICCookbook
 from database.peripheral_cookbook.adc import ADCCookbook
+from core.dma_engine import DMAEngine
 
 
 class PeripheralEngine:
@@ -19,14 +20,16 @@ class PeripheralEngine:
 
     def __init__(self, mcu: MCUProfile):
         self.mcu = mcu
+        # Shared DMA engine so stream allocations don't conflict across peripherals
+        self.dma_engine = DMAEngine(mcu)
         self.gpio_cookbook = GPIOCookbook(mcu)
-        self.uart_cookbook = UARTCookbook(mcu)
-        self.spi_cookbook = SPICookbook(mcu)
+        self.uart_cookbook = UARTCookbook(mcu, self.dma_engine)
+        self.spi_cookbook = SPICookbook(mcu, self.dma_engine)
         self.i2c_cookbook = I2CCookbook(mcu)
         self.timer_basic = TimerBasicCookbook(mcu)
         self.timer_pwm = TimerPWMCookbook(mcu)
         self.timer_ic = TimerICCookbook(mcu)
-        self.adc_cookbook = ADCCookbook(mcu)
+        self.adc_cookbook = ADCCookbook(mcu, self.dma_engine)
 
     def generate_all(self, blueprint: ProjectBlueprint) -> list[PeripheralCode]:
         """Run all relevant cookbook recipes, return list of PeripheralCode."""

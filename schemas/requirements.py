@@ -37,3 +37,4 @@ class PipelineResult(BaseModel):
     failed_stage: Optional[str] = None
     error: Optional[str] = None
     stages_completed: list[str] = []
+    emulation_result: Optional[dict] = None

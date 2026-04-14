@@ -11,6 +11,8 @@ from schemas.mcu_profile import MCUProfile
 @dataclass
 class PeripheralCode:
     """Generated C code for a single peripheral."""
+    # Peripheral type for MSP routing: "gpio", "uart", "spi", "i2c", "timer", "adc"
+    peripheral_type: str = ""
     # MX_xxx_Init() function body (called from main)
     init_function: str = ""
     # Code for HAL_xxx_MspInit() (GPIO + clock enable, called by HAL internally)

@@ -42,30 +42,37 @@ class HALDownloader:
 
         log.info("Downloading HAL drivers for %s (sparse checkout)...", family)
 
-        # Initialize bare repo with sparse checkout
+        # Clone with blob filter and no checkout (fast, minimal download)
         subprocess.run(
-            ["git", "init"],
+            ["git", "clone", "--filter=blob:none", "--no-checkout", "--depth=1",
+             repo_url, "."],
             cwd=str(dest), check=True, capture_output=True,
-        )
-        subprocess.run(
-            ["git", "remote", "add", "origin", repo_url],
-            cwd=str(dest), check=True, capture_output=True,
-        )
-        subprocess.run(
-            ["git", "config", "core.sparseCheckout", "true"],
-            cwd=str(dest), check=True, capture_output=True,
+            timeout=600,
         )
 
-        # Only checkout Drivers/ directory
-        sparse_file = dest / ".git" / "info" / "sparse-checkout"
-        sparse_file.parent.mkdir(parents=True, exist_ok=True)
-        sparse_file.write_text("Drivers/\n", encoding="utf-8")
-
-        # Pull only the latest commit on master (shallow)
+        # Set up cone-mode sparse checkout for Drivers/ only
         subprocess.run(
-            ["git", "pull", "--depth=1", "origin", "master"],
+            ["git", "sparse-checkout", "init", "--cone"],
             cwd=str(dest), check=True, capture_output=True,
-            timeout=600,  # 10 min timeout for large repos
+        )
+        subprocess.run(
+            ["git", "sparse-checkout", "set", "Drivers/STM32F4xx_HAL_Driver",
+             "Drivers/CMSIS"],
+            cwd=str(dest), check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "checkout"],
+            cwd=str(dest), check=True, capture_output=True,
+            timeout=600,
+        )
+
+        # HAL_Driver and CMSIS/Device are git submodules — init them
+        subprocess.run(
+            ["git", "submodule", "update", "--init", "--depth=1",
+             "Drivers/STM32F4xx_HAL_Driver",
+             "Drivers/CMSIS/Device/ST/STM32F4xx"],
+            cwd=str(dest), check=True, capture_output=True,
+            timeout=600,
         )
 
         log.info("HAL drivers cached at %s", dest)

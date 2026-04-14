@@ -1,0 +1,18 @@
+// STM32F446RE — Golden Renode Platform
+// Extends base stm32f4.repl with F446-specific sizes and missing peripherals
+
+using "platforms/cpus/stm32f4.repl"
+
+// Override memory for STM32F446RE: 512KB flash, 128KB SRAM
+flash:
+    size: 0x80000
+
+sram:
+    size: 0x20000
+
+// ADC1 — shared IRQ 18 with ADC2/ADC3
+adc1: Analog.STM32_ADC @ sysbus 0x40012000
+    IRQ -> nvic@18
+
+// SPI4 (F446 has 4 SPI peripherals)
+spi4: SPI.STM32SPI @ sysbus 0x40013400

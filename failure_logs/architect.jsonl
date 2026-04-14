@@ -1,0 +1,18 @@
+{"field": "gpios.mode", "wrong": "input_pu", "expected": "'input_pullup'"}
+{"field": "gpios.mode", "wrong": "input_pd", "expected": "'input_pulldown'"}
+{"field": "gpios.mode", "wrong": "output", "expected": "'output_pp'"}
+{"field": "adcs.resolution", "wrong": "12bit", "expected": "integer 12, not string"}
+{"field": "adcs.resolution", "wrong": "10-bit", "expected": "integer 10, not string"}
+{"field": "spis.cpol", "wrong": "low", "expected": "integer 0 or 1, not string"}
+{"field": "spis.cpha", "wrong": "1edge", "expected": "integer 0 or 1, not string"}
+{"field": "spis.first_bit", "wrong": "MSB", "expected": "'msb' (lowercase)"}
+{"field": "spis.mosi_pin", "wrong": "mosi", "expected": "field must be named 'mosi_pin' not 'mosi'"}
+{"field": "spis.miso_pin", "wrong": "miso", "expected": "field must be named 'miso_pin' not 'miso'"}
+{"field": "spis.sck_pin", "wrong": "sck", "expected": "field must be named 'sck_pin' not 'sck'"}
+{"field": "uarts.tx_pin", "wrong": "tx", "expected": "field must be named 'tx_pin' not 'tx'"}
+{"field": "uarts.rx_pin", "wrong": "rx", "expected": "field must be named 'rx_pin' not 'rx'"}
+{"field": "i2cs.scl_pin", "wrong": "scl", "expected": "field must be named 'scl_pin' not 'scl'"}
+{"field": "i2cs.sda_pin", "wrong": "sda", "expected": "field must be named 'sda_pin' not 'sda'"}
+{"field": "uarts.0.rx_pin", "wrong": "None", "expected": "a valid string"}
+{"field": "dmas.0.direction", "wrong": "memory_to_peripheral", "expected": "'periph_to_memory', 'memory_to_periph' or 'memory_to_memory'"}
+{"field": "dmas.0.dma", "error": "missing", "note": "LLM used wrong field name"}

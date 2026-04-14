@@ -5,14 +5,16 @@ from database.peripheral_cookbook.base import CookbookRecipe, PeripheralCode
 from schemas.peripheral_config import SPIConfig
 from schemas.mcu_profile import MCUProfile
 from core.gpio_engine import GPIOEngine
+from core.dma_engine import DMAEngine
 
 
 class SPICookbook(CookbookRecipe):
-    """Generates SPI peripheral init code."""
+    """Generates SPI peripheral init code with optional DMA."""
 
-    def __init__(self, mcu: MCUProfile):
+    def __init__(self, mcu: MCUProfile, dma_engine: DMAEngine = None):
         super().__init__(mcu)
         self.gpio = GPIOEngine(mcu)
+        self.dma_engine = dma_engine or DMAEngine(mcu)
 
     def generate(self, config: SPIConfig) -> PeripheralCode:
         inst = config.instance
@@ -87,6 +89,43 @@ static void MX_{inst}_Init(void)
             msp_lines.append(f"    GPIO_InitStruct.Alternate = GPIO_AF{af}_{inst};")
             msp_lines.append(f"    HAL_GPIO_Init({self._pin_port_macro(pin)}, &GPIO_InitStruct);")
 
+        extra_handles = []
+        extra_irq_handlers = {}
+        extra_hal_sources = []
+        extra_hal_modules = []
+
+        # DMA TX
+        if config.dma_tx:
+            mapping = self.dma_engine.lookup(f"{inst}_TX")
+            if mapping:
+                dma_handle = f"hdma_{inst.lower()}_tx"
+                dma_info = self.dma_engine.generate_msp_dma_init(
+                    mapping, handle, dma_handle, "memory_to_periph",
+                    "byte" if config.data_size == 8 else "halfword"
+                )
+                msp_lines.append("")
+                msp_lines.append(dma_info["msp_code"])
+                extra_handles.append(dma_info["handle_decl"])
+                extra_irq_handlers[dma_info["irq_handler_name"]] = dma_info["irq_handler_code"]
+                extra_hal_sources.extend(dma_info["hal_sources"])
+                extra_hal_modules.extend(dma_info["hal_modules"])
+
+        # DMA RX
+        if config.dma_rx:
+            mapping = self.dma_engine.lookup(f"{inst}_RX")
+            if mapping:
+                dma_handle = f"hdma_{inst.lower()}_rx"
+                dma_info = self.dma_engine.generate_msp_dma_init(
+                    mapping, handle, dma_handle, "periph_to_memory",
+                    "byte" if config.data_size == 8 else "halfword"
+                )
+                msp_lines.append("")
+                msp_lines.append(dma_info["msp_code"])
+                extra_handles.append(dma_info["handle_decl"])
+                extra_irq_handlers[dma_info["irq_handler_name"]] = dma_info["irq_handler_code"]
+                extra_hal_sources.extend(dma_info["hal_sources"])
+                extra_hal_modules.extend(dma_info["hal_modules"])
+
         if config.interrupt:
             for irq in periph.irq_names:
                 msp_lines.append(f"    HAL_NVIC_SetPriority({irq}, 5, 0);")
@@ -94,11 +133,17 @@ static void MX_{inst}_Init(void)
 
         msp_lines.append("  }")
 
+        hal_sources = list(set(["stm32f4xx_hal_spi.c"] + extra_hal_sources))
+        hal_modules = list(set(["HAL_SPI_MODULE_ENABLED"] + extra_hal_modules))
+        handles = [f"SPI_HandleTypeDef {handle};"] + extra_handles
+
         return PeripheralCode(
+            peripheral_type="spi",
             init_function=init_fn,
             init_prototype=f"static void MX_{inst}_Init(void);",
             msp_init="\n".join(msp_lines),
-            hal_sources=["stm32f4xx_hal_spi.c"],
-            hal_modules=["HAL_SPI_MODULE_ENABLED"],
-            handle_declarations=[f"SPI_HandleTypeDef {handle};"],
+            irq_handlers=extra_irq_handlers,
+            hal_sources=hal_sources,
+            hal_modules=hal_modules,
+            handle_declarations=handles,
         )

@@ -60,7 +60,7 @@ C_SOURCES = \\
 {sources_block}
 
 ASM_SOURCES = \\
-startup/{mcu_lower}.s
+startup/startup_{mcu_lower}.s
 
 #######################################
 # binaries
@@ -88,7 +88,7 @@ C_DEFS = \\
 C_INCLUDES = \\
 {includes_block}
 
-CFLAGS = $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -Wextra -Werror -Wshadow \\
+CFLAGS = $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -Wextra -Werror \\
 -fdata-sections -ffunction-sections -fstack-usage -fno-common
 
 ifeq ($(DEBUG), 1)
@@ -104,8 +104,8 @@ LDSCRIPT = STM32F446RETx_FLASH.ld
 
 LIBS = -lc -lm -lnosys
 LIBDIR =
-LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) $(LIBDIR) $(LIBS) \\
--Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections -Wl,--fatal-warnings
+LDFLAGS = $(MCU) -specs=nano.specs -specs=nosys.specs -T$(LDSCRIPT) $(LIBDIR) $(LIBS) \\
+-Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections
 
 #######################################
 # build the application

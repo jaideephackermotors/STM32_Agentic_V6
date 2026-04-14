@@ -5,6 +5,7 @@ import json
 import logging
 
 from agents.agent_base import DeepSeekClient
+from agents.failure_log import FailureLog
 from schemas.requirements import RequirementSpec
 from schemas.mcu_profile import MCUProfile
 
@@ -55,17 +56,20 @@ class RequirementParserAgent:
     def __init__(self, client: DeepSeekClient, mcu: MCUProfile):
         self.client = client
         self.mcu = mcu
+        self.failure_log = FailureLog("parser")
 
     def parse(self, requirements_text: str) -> RequirementSpec:
-        """Parse requirements text into RequirementSpec.
+        """Parse requirements text into RequirementSpec."""
+        # Inject past failure lessons
+        failures_section = self.failure_log.get_prompt_section()
 
-        Raises ValueError if parsing fails after retries.
-        """
         system = SYSTEM_PROMPT.format(
             mcu_name=self.mcu.name,
             peripherals=", ".join(p.name for p in self.mcu.peripherals),
             gpio_ports=", ".join(self.mcu.gpio_ports),
         )
+        if failures_section:
+            system += "\n" + failures_section
 
         user_msg = f"Requirements:\n{requirements_text}"
 
@@ -76,7 +80,13 @@ class RequirementParserAgent:
         if "mcu" not in data:
             data["mcu"] = self.mcu.name
 
-        spec = RequirementSpec(**data)
+        try:
+            spec = RequirementSpec(**data)
+        except Exception as e:
+            # Record failure for future prompt enrichment
+            self.failure_log.record_parse_error(str(e), requirements_text)
+            raise
+
         log.info("Parsed %d peripheral requirements for project '%s'",
                  len(spec.peripherals), spec.project_name)
         return spec

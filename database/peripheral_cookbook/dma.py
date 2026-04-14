@@ -49,6 +49,7 @@ class DMACookbook(CookbookRecipe):
         rcc = f"__HAL_RCC_DMA{config.dma}_CLK_ENABLE"
 
         return PeripheralCode(
+            peripheral_type="dma",
             init_function=init_code,
             msp_init=f"    {rcc}();",
             hal_sources=["stm32f4xx_hal_dma.c", "stm32f4xx_hal_dma_ex.c"],
