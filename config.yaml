@@ -1,0 +1,31 @@
+deepseek:
+  api_key_env: "DEEPSEEK_API_KEY"
+  model: "deepseek-reasoner"
+  base_url: "https://api.deepseek.com"
+  max_tokens: 8192
+  temperature: 0.0
+
+mcu:
+  default: "STM32F446RETx"
+  family: "stm32f4"
+
+hal:
+  cache_dir: "~/.stm32_hal_cache"
+  repo_url: "https://github.com/STMicroelectronics/STM32CubeF4.git"
+  branch: "master"
+
+toolchain:
+  compiler: "arm-none-eabi-gcc"
+  objcopy: "arm-none-eabi-objcopy"
+  size: "arm-none-eabi-size"
+
+build:
+  optimization: "-Og"
+  debug: true
+  warnings: ["-Wall", "-Wextra", "-Werror", "-Wshadow"]
+  max_compile_fix_attempts: 5
+
+pipeline:
+  max_parse_retries: 1
+  max_identifier_retries: 3
+  workspace_dir: "./generated"

@@ -1,0 +1,13 @@
+services:
+  stm32agent:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./generated:/app/generated
+      - stm32_hal_cache:/root/.stm32_hal_cache
+    entrypoint: ["python", "run.py"]
+
+volumes:
+  stm32_hal_cache:
+    driver: local
